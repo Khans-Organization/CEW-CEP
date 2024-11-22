@@ -3,22 +3,24 @@
 #include <string.h>
 #include <curl/curl.h>
 #include <json-c/json.h>
-#include "header_file.h"
+#include <syslog.h> // For logging to syslog
+#include <unistd.h> // For system calls like notify-send
+#include "header_file.h" // Include your header file
 
+// Callback function for writing the API response to a string
 size_t Callback(void *cont, size_t size, size_t nmemb, void *userp) {
     ((char *)userp)[size * nmemb] = '\0'; // Null-terminate the received string
     strcat((char *)userp, cont);
     return size * nmemb;
 }
 
+// Function to parse JSON data and populate the WeatherData struct
 int parseJSON(const char *json_data, WeatherData *data) {
     struct json_object *parsed_json;
-    struct json_object *location;
-    struct json_object *current;
+    struct json_object *main;
+    struct json_object *city;
     struct json_object *temp;
     struct json_object *humid;
-    struct json_object *city;
-    struct json_object *country;
 
     parsed_json = json_tokener_parse(json_data);
     if (parsed_json == NULL) {
@@ -26,28 +28,24 @@ int parseJSON(const char *json_data, WeatherData *data) {
         return 1;
     }
 
-    location = json_object_object_get(parsed_json, "location");
-    current = json_object_object_get(parsed_json, "current");
-
-    city = json_object_object_get(location, "name");
-    country = json_object_object_get(location, "country");
-    temp = json_object_object_get(current, "temperature");
-    humid = json_object_object_get(current, "humidity");
+    main = json_object_object_get(parsed_json, "main");
+    city = json_object_object_get(parsed_json, "name");
+    temp = json_object_object_get(main, "temp");
+    humid = json_object_object_get(main, "humidity");
 
     strcpy(data->city, json_object_get_string(city));
-    strcpy(data->country, json_object_get_string(country));
     data->temperature = json_object_get_double(temp);
     data->humidity = json_object_get_int(humid);
 
     // Print parsed data for debugging
     printf("City: %s\n", data->city);
-    printf("Country: %s\n", data->country);
     printf("Temperature: %.2f°C\n", data->temperature);
     printf("Humidity: %d%%\n", data->humidity);
 
     return 0;
 }
 
+// Function to fetch weather data using CURL
 int weatherData(const char *url, char *response) {
     CURL *curl;
     CURLcode res;
@@ -78,20 +76,33 @@ int weatherData(const char *url, char *response) {
     return 0;
 }
 
+// Function to check and generate alerts
 void alertsChecking(const WeatherData *data) {
-    if (data->temperature > 30.0) {
-        printf("Alert: High temperature has been found in %s!\n", data->city);
+    openlog("WeatherAlerts", LOG_PID | LOG_CONS, LOG_USER); // Open syslog session
+
+    // Example alerts
+    if (data->temperature > 35.0) {
+        syslog(LOG_WARNING, "High temperature detected in %s: %.2f°C", data->city, data->temperature);
+        system("notify-send 'Weather Alert' 'High temperature detected!'");
     }
     if (data->humidity < 20) {
-        printf("Alert: Low humidity has been found in %s!\n", data->city);
+        syslog(LOG_WARNING, "Low humidity detected in %s: %d%%", data->city, data->humidity);
+        system("notify-send 'Weather Alert' 'Low humidity detected!'");
     }
+    if (data->humidity > 80) {
+        syslog(LOG_WARNING, "High humidity detected in %s: %d%%", data->city, data->humidity);
+        system("notify-send 'Weather Alert' 'High humidity detected!'");
+    }
+
+    closelog(); // Close the syslog session
 }
 
+// Function to write weather data to a file
 void writingInFile(const char *filename, const WeatherData *data) {
     FILE *file = fopen(filename, "a");
     if (file != NULL) {
-        fprintf(file, "City: %s, Country: %s, Temperature: %.2f°C, Humidity: %d%%\n",
-                data->city, data->country, data->temperature, data->humidity);
+        fprintf(file, "City: %s, Temperature: %.2f°C, Humidity: %d%%\n",
+                data->city, data->temperature, data->humidity);
         fclose(file);
     } else {
         perror("Error opening file");
@@ -102,13 +113,13 @@ int main() {
     char response[2048] = "";  // Buffer to store API response
     WeatherData data;
 
-    // API URL with your WeatherStack API key, specify the country for unambiguous city
-    const char *url = "http://api.weatherstack.com/current?access_key=1545f58ef63ff2b6020ccf135fe6af19&query=sydney";
+    // API URL with your OpenWeather API key
+    const char *url = "http://api.openweathermap.org/data/2.5/weather?q=Karachi,PK&units=metric&appid=833e18e3d3df702326c6f5e1b57b3701";
 
     if (weatherData(url, response) == 0) {
         if (parseJSON(response, &data) == 0) {
-            writingInFile("data_file", &data);  // Using file name "data_file"
-            alertsChecking(&data);
+            writingInFile("weather_data.txt", &data);  // Save data to file
+            alertsChecking(&data);  // Check for alerts
         } else {
             fprintf(stderr, "Error parsing JSON data\n");
         }
